@@ -1,0 +1,34 @@
+name: Check draft orders for instock-ready
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-drafts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run checker
+        env:
+          SHOPIFY_SHOP: ${{ secrets.SHOPIFY_SHOP }}
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SHOPIFY_API_VERSION: ${{ secrets.SHOPIFY_API_VERSION }}
+          SHOPIFY_LOCATION_ID: ${{ secrets.SHOPIFY_LOCATION_ID }}
+          READY_TAG: ${{ secrets.READY_TAG }}
+          EXCLUDE_TAGS: ${{ secrets.EXCLUDE_TAGS }}
+          DRY_RUN: ${{ secrets.DRY_RUN }}
+          LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+        run: python check_draft_orders.py
