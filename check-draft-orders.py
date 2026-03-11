@@ -24,7 +24,6 @@ EXCLUDE_TAGS = {
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
-# Tunables to keep GraphQL cost low
 DRAFTS_PAGE_SIZE = 25
 LINE_ITEMS_PAGE_SIZE = 100
 INVENTORY_BATCH_SIZE = 25
@@ -198,8 +197,6 @@ def collect_inventory_item_ids(drafts: List[dict]) -> List[str]:
     for draft in drafts:
         tags = normalize_tags(draft.get("tags", []))
         if has_excluded_tag(tags):
-            continue
-        if draft.get("invoiceUrl"):
             continue
 
         for edge in draft["lineItems"]["edges"]:
@@ -379,17 +376,9 @@ def main() -> None:
         name = draft["name"]
         draft_id = draft["id"]
         tags = normalize_tags(draft.get("tags", []))
-        invoice_url = draft.get("invoiceUrl")
 
         if has_excluded_tag(tags):
             logger.info("Skipping %s because it has an excluded tag", name)
-            continue
-
-        # Safety rule:
-        # updating a draft can interfere with a started invoice checkout,
-        # so skip drafts that already have an invoice URL.
-        if invoice_url:
-            logger.info("Skipping %s because invoiceUrl exists", name)
             continue
 
         is_ready, reasons = evaluate_draft(draft, availability_map)
