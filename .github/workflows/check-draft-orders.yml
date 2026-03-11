@@ -31,4 +31,4 @@ jobs:
           EXCLUDE_TAGS: ${{ secrets.EXCLUDE_TAGS }}
           DRY_RUN: ${{ secrets.DRY_RUN }}
           LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
-        run: python check_draft_orders.py
+        run: python check-draft-orders.py
