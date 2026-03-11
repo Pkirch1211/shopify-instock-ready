@@ -1,7 +1,7 @@
 import logging
 import os
 import sys
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import requests
 from dotenv import load_dotenv
@@ -24,6 +24,12 @@ EXCLUDE_TAGS = {
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
+# Tunables to keep GraphQL cost low
+DRAFTS_PAGE_SIZE = 25
+LINE_ITEMS_PAGE_SIZE = 100
+INVENTORY_BATCH_SIZE = 25
+INVENTORY_LEVELS_PAGE_SIZE = 20
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -41,8 +47,8 @@ HEADERS = {
 }
 
 DRAFTS_QUERY = """
-query GetDraftOrders($cursor: String) {
-  draftOrders(first: 100, after: $cursor, query: "status:open") {
+query GetDraftOrders($cursor: String, $pageSize: Int!, $lineItemsPageSize: Int!) {
+  draftOrders(first: $pageSize, after: $cursor, query: "status:open") {
     edges {
       cursor
       node {
@@ -50,7 +56,7 @@ query GetDraftOrders($cursor: String) {
         name
         invoiceUrl
         tags
-        lineItems(first: 250) {
+        lineItems(first: $lineItemsPageSize) {
           edges {
             node {
               id
@@ -63,23 +69,12 @@ query GetDraftOrders($cursor: String) {
                   id
                   tracked
                   sku
-                  inventoryLevels(first: 50) {
-                    edges {
-                      node {
-                        location {
-                          id
-                          name
-                        }
-                        quantities(names: ["available"]) {
-                          name
-                          quantity
-                        }
-                      }
-                    }
-                  }
                 }
               }
             }
+          }
+          pageInfo {
+            hasNextPage
           }
         }
       }
@@ -87,6 +82,32 @@ query GetDraftOrders($cursor: String) {
     pageInfo {
       hasNextPage
       endCursor
+    }
+  }
+}
+"""
+
+INVENTORY_ITEMS_QUERY = """
+query GetInventoryItems($ids: [ID!]!, $levelsPageSize: Int!) {
+  nodes(ids: $ids) {
+    ... on InventoryItem {
+      id
+      tracked
+      sku
+      inventoryLevels(first: $levelsPageSize) {
+        edges {
+          node {
+            location {
+              id
+              name
+            }
+            quantities(names: ["available"]) {
+              name
+              quantity
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -107,6 +128,10 @@ mutation UpdateDraftTags($id: ID!, $input: DraftOrderInput!) {
   }
 }
 """
+
+
+def chunked(items: List[str], size: int) -> List[List[str]]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
 
 
 def shopify_graphql(query: str, variables: Optional[dict] = None) -> dict:
@@ -138,11 +163,25 @@ def fetch_open_drafts() -> List[dict]:
     cursor = None
 
     while True:
-        data = shopify_graphql(DRAFTS_QUERY, {"cursor": cursor})
+        data = shopify_graphql(
+            DRAFTS_QUERY,
+            {
+                "cursor": cursor,
+                "pageSize": DRAFTS_PAGE_SIZE,
+                "lineItemsPageSize": LINE_ITEMS_PAGE_SIZE,
+            },
+        )
         connection = data["draftOrders"]
 
         for edge in connection["edges"]:
-            drafts.append(edge["node"])
+            node = edge["node"]
+            if node["lineItems"]["pageInfo"]["hasNextPage"]:
+                logger.warning(
+                    "Draft %s has more than %s line items; extra lines are not being evaluated",
+                    node["name"],
+                    LINE_ITEMS_PAGE_SIZE,
+                )
+            drafts.append(node)
 
         if not connection["pageInfo"]["hasNextPage"]:
             break
@@ -151,6 +190,35 @@ def fetch_open_drafts() -> List[dict]:
 
     logger.info("Fetched %s open draft orders", len(drafts))
     return drafts
+
+
+def collect_inventory_item_ids(drafts: List[dict]) -> List[str]:
+    ids: Set[str] = set()
+
+    for draft in drafts:
+        tags = normalize_tags(draft.get("tags", []))
+        if has_excluded_tag(tags):
+            continue
+        if draft.get("invoiceUrl"):
+            continue
+
+        for edge in draft["lineItems"]["edges"]:
+            line = edge["node"]
+            variant = line.get("variant")
+            if not variant:
+                continue
+
+            inventory_item = variant.get("inventoryItem")
+            if not inventory_item:
+                continue
+
+            inventory_item_id = inventory_item.get("id")
+            tracked = bool(inventory_item.get("tracked"))
+
+            if inventory_item_id and tracked:
+                ids.add(inventory_item_id)
+
+    return sorted(ids)
 
 
 def available_at_location(inventory_levels_edges: List[dict], location_id: str) -> Optional[int]:
@@ -167,7 +235,49 @@ def available_at_location(inventory_levels_edges: List[dict], location_id: str) 
     return None
 
 
-def evaluate_draft(draft: dict) -> Tuple[bool, List[str]]:
+def fetch_inventory_availability(inventory_item_ids: List[str]) -> Dict[str, Dict[str, Optional[int]]]:
+    results: Dict[str, Dict[str, Optional[int]]] = {}
+
+    if not inventory_item_ids:
+        return results
+
+    batches = chunked(inventory_item_ids, INVENTORY_BATCH_SIZE)
+
+    for batch_num, batch_ids in enumerate(batches, start=1):
+        data = shopify_graphql(
+            INVENTORY_ITEMS_QUERY,
+            {
+                "ids": batch_ids,
+                "levelsPageSize": INVENTORY_LEVELS_PAGE_SIZE,
+            },
+        )
+
+        nodes = data.get("nodes", [])
+        logger.info(
+            "Fetched inventory batch %s/%s (%s inventory items)",
+            batch_num,
+            len(batches),
+            len(batch_ids),
+        )
+
+        for node in nodes:
+            if not node:
+                continue
+
+            inventory_item_id = node.get("id")
+            if not inventory_item_id:
+                continue
+
+            levels = node.get("inventoryLevels", {}).get("edges", [])
+            results[inventory_item_id] = {
+                "sku": node.get("sku") or "(no sku)",
+                "available": available_at_location(levels, SHOPIFY_LOCATION_ID),
+            }
+
+    return results
+
+
+def evaluate_draft(draft: dict, availability_map: Dict[str, Dict[str, Optional[int]]]) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
     tracked_line_count = 0
 
@@ -182,11 +292,14 @@ def evaluate_draft(draft: dict) -> Tuple[bool, List[str]]:
 
         inventory_item = variant.get("inventoryItem")
         if not inventory_item:
-            reasons.append(f"Variant has no inventory item: {variant.get('displayName', 'unknown')}")
+            reasons.append(
+                f"Variant has no inventory item: {variant.get('displayName', 'unknown')}"
+            )
             continue
 
         tracked = bool(inventory_item.get("tracked"))
         sku = inventory_item.get("sku") or "(no sku)"
+        inventory_item_id = inventory_item.get("id")
 
         if not tracked:
             reasons.append(f"Ignoring untracked item {sku}")
@@ -194,8 +307,16 @@ def evaluate_draft(draft: dict) -> Tuple[bool, List[str]]:
 
         tracked_line_count += 1
 
-        levels = inventory_item.get("inventoryLevels", {}).get("edges", [])
-        available = available_at_location(levels, SHOPIFY_LOCATION_ID)
+        if not inventory_item_id:
+            reasons.append(f"Missing inventory item ID for {sku}")
+            return False, reasons
+
+        availability_info = availability_map.get(inventory_item_id)
+        if not availability_info:
+            reasons.append(f"No inventory lookup result for {sku}")
+            return False, reasons
+
+        available = availability_info.get("available")
 
         if available is None:
             reasons.append(f"No inventory level at target location for {sku}")
@@ -248,6 +369,11 @@ def update_draft_tags(draft_id: str, current_tags: List[str], should_have_ready_
 
 def main() -> None:
     drafts = fetch_open_drafts()
+    inventory_item_ids = collect_inventory_item_ids(drafts)
+
+    logger.info("Need inventory checks for %s unique tracked inventory items", len(inventory_item_ids))
+
+    availability_map = fetch_inventory_availability(inventory_item_ids)
 
     for draft in drafts:
         name = draft["name"]
@@ -266,7 +392,7 @@ def main() -> None:
             logger.info("Skipping %s because invoiceUrl exists", name)
             continue
 
-        is_ready, reasons = evaluate_draft(draft)
+        is_ready, reasons = evaluate_draft(draft, availability_map)
         has_ready_tag = READY_TAG in tags
 
         logger.info(
