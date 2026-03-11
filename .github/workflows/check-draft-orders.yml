@@ -27,8 +27,8 @@ jobs:
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SHOPIFY_API_VERSION: ${{ secrets.SHOPIFY_API_VERSION }}
           SHOPIFY_LOCATION_ID: ${{ secrets.SHOPIFY_LOCATION_ID }}
-          READY_TAG: ${{ secrets.READY_TAG }}
-          EXCLUDE_TAGS: ${{ secrets.EXCLUDE_TAGS }}
-          DRY_RUN: ${{ secrets.DRY_RUN }}
-          LOG_LEVEL: ${{ secrets.LOG_LEVEL }}
+          READY_TAG: ${{ vars.READY_TAG }}
+          EXCLUDE_TAGS: ${{ vars.EXCLUDE_TAGS }}
+          DRY_RUN: ${{ vars.DRY_RUN }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL }}
         run: python check-draft-orders.py
