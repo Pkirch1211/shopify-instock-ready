@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -13,6 +14,7 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN", "").strip()
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-10").strip()
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION_ID", "").strip()
 READY_TAG = os.getenv("READY_TAG", "instock-ready").strip()
+NEEDS_REVIEW_TAG = os.getenv("NEEDS_REVIEW_TAG", "needs-review").strip()
 EXCLUDE_TAGS = {
     t.strip()
     for t in os.getenv(
@@ -54,6 +56,8 @@ query GetDraftOrders($cursor: String, $pageSize: Int!, $lineItemsPageSize: Int!)
         id
         name
         invoiceUrl
+        note2
+        poNumber
         tags
         lineItems(first: $lineItemsPageSize) {
           edges {
@@ -127,6 +131,14 @@ mutation UpdateDraftTags($id: ID!, $input: DraftOrderInput!) {
   }
 }
 """
+
+DEMO_PATTERNS = [
+    re.compile(r"\bFREE\s+DEMOS\b", re.IGNORECASE),
+    re.compile(r"\bDEMOS\b", re.IGNORECASE),
+    re.compile(r"\bDEMO\b", re.IGNORECASE),
+]
+CHARGE_PATTERN = re.compile(r"\bCHARGE\b", re.IGNORECASE)
+DISCOUNT_PATTERN = re.compile(r"\bDISCOUNT\b", re.IGNORECASE)
 
 
 def chunked(items: List[str], size: int) -> List[List[str]]:
@@ -274,7 +286,39 @@ def fetch_inventory_availability(inventory_item_ids: List[str]) -> Dict[str, Dic
     return results
 
 
-def evaluate_draft(draft: dict, availability_map: Dict[str, Dict[str, Optional[int]]]) -> Tuple[bool, List[str]]:
+def get_review_scan_text(draft: dict) -> str:
+    parts = [
+        draft.get("note2") or "",
+        draft.get("poNumber") or "",
+    ]
+    return " | ".join(part for part in parts if part).strip()
+
+
+def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
+    reasons: List[str] = []
+    scan_text = get_review_scan_text(draft)
+
+    if not scan_text:
+        return False, reasons
+
+    for pattern in DEMO_PATTERNS:
+        if pattern.search(scan_text):
+            reasons.append(
+                f"Matched review keyword '{pattern.pattern}' in note/PO text"
+            )
+            return True, reasons
+
+    if CHARGE_PATTERN.search(scan_text) and DISCOUNT_PATTERN.search(scan_text):
+        reasons.append("Matched review condition: contains both 'CHARGE' and 'DISCOUNT'")
+        return True, reasons
+
+    return False, reasons
+
+
+def evaluate_draft(
+    draft: dict,
+    availability_map: Dict[str, Dict[str, Optional[int]]],
+) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
     tracked_line_count = 0
 
@@ -330,13 +374,23 @@ def evaluate_draft(draft: dict, availability_map: Dict[str, Dict[str, Optional[i
     return True, reasons
 
 
-def update_draft_tags(draft_id: str, current_tags: List[str], should_have_ready_tag: bool) -> None:
+def update_draft_tags(
+    draft_id: str,
+    current_tags: List[str],
+    should_have_ready_tag: bool,
+    should_have_review_tag: bool,
+) -> None:
     new_tags = set(normalize_tags(current_tags))
 
     if should_have_ready_tag:
         new_tags.add(READY_TAG)
     else:
         new_tags.discard(READY_TAG)
+
+    if should_have_review_tag:
+        new_tags.add(NEEDS_REVIEW_TAG)
+    else:
+        new_tags.discard(NEEDS_REVIEW_TAG)
 
     final_tags = sorted(new_tags)
 
@@ -381,23 +435,43 @@ def main() -> None:
             logger.info("Skipping %s because it has an excluded tag", name)
             continue
 
-        is_ready, reasons = evaluate_draft(draft, availability_map)
+        is_ready, ready_reasons = evaluate_draft(draft, availability_map)
+        needs_review, review_reasons = evaluate_review_status(draft)
         has_ready_tag = READY_TAG in tags
+        has_review_tag = NEEDS_REVIEW_TAG in tags
 
         logger.info(
-            "Draft %s | ready=%s | has_tag=%s | reasons=%s",
+            "Draft %s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
             name,
             is_ready,
             has_ready_tag,
-            reasons,
+            needs_review,
+            has_review_tag,
+            ready_reasons,
+            review_reasons,
         )
 
+        update_draft_tags(
+            draft_id=draft_id,
+            current_tags=tags,
+            should_have_ready_tag=is_ready,
+            should_have_review_tag=needs_review,
+        )
+
+        final_actions: List[str] = []
+
         if is_ready and not has_ready_tag:
-            update_draft_tags(draft_id, tags, True)
-            logger.info("Added %s to %s", READY_TAG, name)
+            final_actions.append(f"added {READY_TAG}")
         elif not is_ready and has_ready_tag:
-            update_draft_tags(draft_id, tags, False)
-            logger.info("Removed %s from %s", READY_TAG, name)
+            final_actions.append(f"removed {READY_TAG}")
+
+        if needs_review and not has_review_tag:
+            final_actions.append(f"added {NEEDS_REVIEW_TAG}")
+        elif not needs_review and has_review_tag:
+            final_actions.append(f"removed {NEEDS_REVIEW_TAG}")
+
+        if final_actions:
+            logger.info("Tag updates for %s: %s", name, ", ".join(final_actions))
         else:
             logger.info("No tag change needed for %s", name)
 
