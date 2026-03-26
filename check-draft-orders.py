@@ -23,6 +23,11 @@ EXCLUDE_TAGS = {
     ).split(",")
     if t.strip()
 }
+EXCLUDED_CUSTOMERS = {
+    c.strip().casefold()
+    for c in os.getenv("EXCLUDED_CUSTOMERS", "").split(",")
+    if c.strip()
+}
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
@@ -59,6 +64,9 @@ query GetDraftOrders($cursor: String, $pageSize: Int!, $lineItemsPageSize: Int!)
         note2
         poNumber
         tags
+        customer {
+          displayName
+        }
         lineItems(first: $lineItemsPageSize) {
           edges {
             node {
@@ -167,6 +175,20 @@ def has_excluded_tag(tags: List[str]) -> bool:
     return any(tag in EXCLUDE_TAGS for tag in tags)
 
 
+def get_customer_name(draft: dict) -> str:
+    customer = draft.get("customer")
+    if not customer:
+        return ""
+    return (customer.get("displayName") or "").strip()
+
+
+def is_excluded_customer(draft: dict) -> bool:
+    customer_name = get_customer_name(draft)
+    if not customer_name:
+        return False
+    return customer_name.casefold() in EXCLUDED_CUSTOMERS
+
+
 def fetch_open_drafts() -> List[dict]:
     drafts: List[dict] = []
     cursor = None
@@ -207,6 +229,8 @@ def collect_inventory_item_ids(drafts: List[dict]) -> List[str]:
     for draft in drafts:
         tags = normalize_tags(draft.get("tags", []))
         if has_excluded_tag(tags):
+            continue
+        if is_excluded_customer(draft):
             continue
 
         for edge in draft["lineItems"]["edges"]:
@@ -439,9 +463,18 @@ def main() -> None:
             name = draft["name"]
             draft_id = draft["id"]
             tags = normalize_tags(draft.get("tags", []))
+            customer_name = get_customer_name(draft)
 
             if has_excluded_tag(tags):
                 logger.info("Skipping %s because it has an excluded tag", name)
+                continue
+
+            if is_excluded_customer(draft):
+                logger.info(
+                    "Skipping %s because customer '%s' is excluded",
+                    name,
+                    customer_name or "(blank)",
+                )
                 continue
 
             is_ready, ready_reasons = evaluate_draft(draft, availability_map)
@@ -450,8 +483,9 @@ def main() -> None:
             has_review_tag = NEEDS_REVIEW_TAG in tags
 
             logger.info(
-                "Draft %s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
+                "Draft %s | customer=%s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
                 name,
+                customer_name or "(blank)",
                 is_ready,
                 has_ready_tag,
                 needs_review,
