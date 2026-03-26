@@ -378,11 +378,13 @@ def evaluate_draft(
 
 def update_draft_tags(
     draft_id: str,
+    draft_name: str,
     current_tags: List[str],
     should_have_ready_tag: bool,
     should_have_review_tag: bool,
-) -> None:
-    new_tags = set(normalize_tags(current_tags))
+) -> bool:
+    existing_tags = normalize_tags(current_tags)
+    new_tags = set(existing_tags)
 
     if should_have_ready_tag:
         new_tags.add(READY_TAG)
@@ -396,28 +398,40 @@ def update_draft_tags(
 
     final_tags = sorted(new_tags)
 
-    if final_tags == normalize_tags(current_tags):
-        return
+    if final_tags == existing_tags:
+        return False
 
-    logger.info("Updating tags for %s -> %s", draft_id, final_tags)
+    logger.info("Updating tags for %s (%s) -> %s", draft_name, draft_id, final_tags)
 
     if DRY_RUN:
         logger.info("DRY RUN enabled; skipping tag update")
-        return
+        return True
 
-    data = shopify_graphql(
-        DRAFT_UPDATE_MUTATION,
-        {
-            "id": draft_id,
-            "input": {
-                "tags": final_tags,
+    try:
+        data = shopify_graphql(
+            DRAFT_UPDATE_MUTATION,
+            {
+                "id": draft_id,
+                "input": {
+                    "tags": final_tags,
+                },
             },
-        },
-    )
+        )
+    except Exception:
+        logger.exception("GraphQL request failed while updating tags for %s (%s)", draft_name, draft_id)
+        return False
 
     user_errors = data["draftOrderUpdate"].get("userErrors", [])
     if user_errors:
-        raise RuntimeError(f"draftOrderUpdate userErrors: {user_errors}")
+        logger.error(
+            "Skipping tag update for %s (%s) because Shopify returned userErrors: %s",
+            draft_name,
+            draft_id,
+            user_errors,
+        )
+        return False
+
+    return True
 
 
 def main() -> None:
@@ -429,53 +443,68 @@ def main() -> None:
     availability_map = fetch_inventory_availability(inventory_item_ids)
 
     for draft in drafts:
-        name = draft["name"]
-        draft_id = draft["id"]
-        tags = normalize_tags(draft.get("tags", []))
+        try:
+            name = draft["name"]
+            draft_id = draft["id"]
+            tags = normalize_tags(draft.get("tags", []))
 
-        if has_excluded_tag(tags):
-            logger.info("Skipping %s because it has an excluded tag", name)
+            if has_excluded_tag(tags):
+                logger.info("Skipping %s because it has an excluded tag", name)
+                continue
+
+            is_ready, ready_reasons = evaluate_draft(draft, availability_map)
+            needs_review, review_reasons = evaluate_review_status(draft)
+            has_ready_tag = READY_TAG in tags
+            has_review_tag = NEEDS_REVIEW_TAG in tags
+
+            logger.info(
+                "Draft %s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
+                name,
+                is_ready,
+                has_ready_tag,
+                needs_review,
+                has_review_tag,
+                ready_reasons,
+                review_reasons,
+            )
+
+            final_actions: List[str] = []
+
+            if is_ready and not has_ready_tag:
+                final_actions.append(f"added {READY_TAG}")
+            elif not is_ready and has_ready_tag:
+                final_actions.append(f"removed {READY_TAG}")
+
+            if needs_review and not has_review_tag:
+                final_actions.append(f"added {NEEDS_REVIEW_TAG}")
+            elif not needs_review and has_review_tag:
+                final_actions.append(f"removed {NEEDS_REVIEW_TAG}")
+
+            updated = update_draft_tags(
+                draft_id=draft_id,
+                draft_name=name,
+                current_tags=tags,
+                should_have_ready_tag=is_ready,
+                should_have_review_tag=needs_review,
+            )
+
+            if updated and final_actions:
+                logger.info("Tag updates for %s: %s", name, ", ".join(final_actions))
+            elif final_actions:
+                logger.warning(
+                    "Wanted tag changes for %s but update did not succeed: %s",
+                    name,
+                    ", ".join(final_actions),
+                )
+            else:
+                logger.info("No tag change needed for %s", name)
+
+        except Exception:
+            logger.exception(
+                "Unexpected error while processing draft %s",
+                draft.get("name", "(unknown)"),
+            )
             continue
-
-        is_ready, ready_reasons = evaluate_draft(draft, availability_map)
-        needs_review, review_reasons = evaluate_review_status(draft)
-        has_ready_tag = READY_TAG in tags
-        has_review_tag = NEEDS_REVIEW_TAG in tags
-
-        logger.info(
-            "Draft %s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
-            name,
-            is_ready,
-            has_ready_tag,
-            needs_review,
-            has_review_tag,
-            ready_reasons,
-            review_reasons,
-        )
-
-        update_draft_tags(
-            draft_id=draft_id,
-            current_tags=tags,
-            should_have_ready_tag=is_ready,
-            should_have_review_tag=needs_review,
-        )
-
-        final_actions: List[str] = []
-
-        if is_ready and not has_ready_tag:
-            final_actions.append(f"added {READY_TAG}")
-        elif not is_ready and has_ready_tag:
-            final_actions.append(f"removed {READY_TAG}")
-
-        if needs_review and not has_review_tag:
-            final_actions.append(f"added {NEEDS_REVIEW_TAG}")
-        elif not needs_review and has_review_tag:
-            final_actions.append(f"removed {NEEDS_REVIEW_TAG}")
-
-        if final_actions:
-            logger.info("Tag updates for %s: %s", name, ", ".join(final_actions))
-        else:
-            logger.info("No tag change needed for %s", name)
 
 
 if __name__ == "__main__":
