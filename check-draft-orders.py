@@ -138,7 +138,6 @@ DEMO_PATTERNS = [
     re.compile(r"\bDEMO\b", re.IGNORECASE),
 ]
 CHARGE_SHIPPING_PATTERN = re.compile(r"\bCHARGE\s+SHIPPING\b", re.IGNORECASE)
-CHARGE_FREIGHT_PATTERN = re.compile(r"\bCHARGE\s+FREIGHT\b", re.IGNORECASE)
 
 
 def chunked(items: List[str], size: int) -> List[List[str]]:
@@ -308,9 +307,9 @@ def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
             )
             return True, reasons
 
-    if CHARGE_SHIPPING_PATTERN.search(scan_text) or CHARGE_FREIGHT_PATTERN.search(scan_text):
+    if CHARGE_SHIPPING_PATTERN.search(scan_text):
         reasons.append(
-            "Matched review condition: contains 'CHARGE SHIPPING' or 'CHARGE FREIGHT'"
+            "Matched review condition: contains 'CHARGE SHIPPING'"
         )
         return True, reasons
 
