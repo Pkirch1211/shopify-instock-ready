@@ -137,7 +137,6 @@ DEMO_PATTERNS = [
     re.compile(r"\bDEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMO\b", re.IGNORECASE),
 ]
-CHARGE_SHIPPING_PATTERN = re.compile(r"\bCHARGE\s+SHIPPING\b", re.IGNORECASE)
 
 
 def chunked(items: List[str], size: int) -> List[List[str]]:
@@ -306,12 +305,6 @@ def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
                 f"Matched review keyword '{pattern.pattern}' in note/PO text"
             )
             return True, reasons
-
-    if CHARGE_SHIPPING_PATTERN.search(scan_text):
-        reasons.append(
-            "Matched review condition: contains 'CHARGE SHIPPING'"
-        )
-        return True, reasons
 
     return False, reasons
 
