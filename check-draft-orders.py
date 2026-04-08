@@ -144,6 +144,7 @@ DEMO_PATTERNS = [
     re.compile(r"\bFREE\s+DEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMO\b", re.IGNORECASE),
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),
 ]
 
 
