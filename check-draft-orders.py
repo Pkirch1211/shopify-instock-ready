@@ -142,6 +142,7 @@ mutation UpdateDraftTags($id: ID!, $input: DraftOrderInput!) {
 
 DEMO_PATTERNS = [
     re.compile(r"\bFREE\s+DEMOS\b", re.IGNORECASE),
+    re.compile(r"\bPURCHASE\s+POWER\b", re.IGNORECASE),
     re.compile(r"\bDEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMO\b", re.IGNORECASE),
     re.compile(r"\bPPP\b", re.IGNORECASE),
