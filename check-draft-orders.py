@@ -15,6 +15,7 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-10").strip()
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION_ID", "").strip()
 READY_TAG = os.getenv("READY_TAG", "instock-ready").strip()
 NEEDS_REVIEW_TAG = os.getenv("NEEDS_REVIEW_TAG", "needs-review").strip()
+REVIEW_ORDER_VALUE_THRESHOLD = float(os.getenv("REVIEW_ORDER_VALUE_THRESHOLD", "5000").strip())
 EXCLUDE_TAGS = {
     t.strip()
     for t in os.getenv(
@@ -64,6 +65,7 @@ query GetDraftOrders($cursor: String, $pageSize: Int!, $lineItemsPageSize: Int!)
         note2
         poNumber
         tags
+        totalPrice
         customer {
           displayName
         }
@@ -192,6 +194,17 @@ def is_excluded_customer(draft: dict) -> bool:
     return customer_name.casefold() in EXCLUDED_CUSTOMERS
 
 
+def get_draft_order_value(draft: dict) -> float:
+    try:
+        return float(draft.get("totalPrice") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def is_high_value_order(draft: dict) -> bool:
+    return get_draft_order_value(draft) > REVIEW_ORDER_VALUE_THRESHOLD
+
+
 def fetch_open_drafts() -> List[dict]:
     drafts: List[dict] = []
     cursor = None
@@ -234,6 +247,8 @@ def collect_inventory_item_ids(drafts: List[dict]) -> List[str]:
         if has_excluded_tag(tags):
             continue
         if is_excluded_customer(draft):
+            continue
+        if is_high_value_order(draft):
             continue
 
         for edge in draft["lineItems"]["edges"]:
@@ -321,6 +336,14 @@ def get_review_scan_text(draft: dict) -> str:
 
 def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
+
+    order_value = get_draft_order_value(draft)
+    if order_value > REVIEW_ORDER_VALUE_THRESHOLD:
+        reasons.append(
+            f"Order value {order_value:.2f} is greater than {REVIEW_ORDER_VALUE_THRESHOLD:.2f}"
+        )
+        return True, reasons
+
     scan_text = get_review_scan_text(draft)
 
     if not scan_text:
@@ -467,6 +490,7 @@ def main() -> None:
             draft_id = draft["id"]
             tags = normalize_tags(draft.get("tags", []))
             customer_name = get_customer_name(draft)
+            order_value = get_draft_order_value(draft)
 
             if has_excluded_tag(tags):
                 logger.info("Skipping %s because it has an excluded tag", name)
@@ -480,15 +504,48 @@ def main() -> None:
                 )
                 continue
 
+            if is_high_value_order(draft):
+                has_review_tag = NEEDS_REVIEW_TAG in tags
+
+                logger.info(
+                    "Draft %s | customer=%s | order_value=%.2f | high_value=True | has_review_tag=%s",
+                    name,
+                    customer_name or "(blank)",
+                    order_value,
+                    has_review_tag,
+                )
+
+                updated = update_draft_tags(
+                    draft_id=draft_id,
+                    draft_name=name,
+                    current_tags=tags,
+                    should_have_ready_tag=False,
+                    should_have_review_tag=True,
+                )
+
+                if updated and not has_review_tag:
+                    logger.info("Tag updates for %s: added %s", name, NEEDS_REVIEW_TAG)
+                elif not has_review_tag:
+                    logger.warning(
+                        "Wanted tag changes for %s but update did not succeed: added %s",
+                        name,
+                        NEEDS_REVIEW_TAG,
+                    )
+                else:
+                    logger.info("No tag change needed for %s", name)
+
+                continue
+
             is_ready, ready_reasons = evaluate_draft(draft, availability_map)
             needs_review, review_reasons = evaluate_review_status(draft)
             has_ready_tag = READY_TAG in tags
             has_review_tag = NEEDS_REVIEW_TAG in tags
 
             logger.info(
-                "Draft %s | customer=%s | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
+                "Draft %s | customer=%s | order_value=%.2f | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
                 name,
                 customer_name or "(blank)",
+                order_value,
                 is_ready,
                 has_ready_tag,
                 needs_review,
