@@ -29,6 +29,11 @@ EXCLUDED_CUSTOMERS = {
     for c in os.getenv("EXCLUDED_CUSTOMERS", "").split(",")
     if c.strip()
 }
+EXCLUDED_SKUS = {
+    s.strip().casefold()
+    for s in os.getenv("EXCLUDED_SKUS", "").split(",")
+    if s.strip()
+}
 DRY_RUN = os.getenv("DRY_RUN", "true").strip().lower() == "true"
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper().strip()
 
@@ -205,6 +210,27 @@ def is_high_value_order(draft: dict) -> bool:
     return get_draft_order_value(draft) > REVIEW_ORDER_VALUE_THRESHOLD
 
 
+def get_excluded_skus_in_draft(draft: dict) -> List[str]:
+    """Return a list of SKUs in the draft that appear in EXCLUDED_SKUS."""
+    if not EXCLUDED_SKUS:
+        return []
+
+    matched: List[str] = []
+    for edge in draft["lineItems"]["edges"]:
+        line = edge["node"]
+        variant = line.get("variant")
+        if not variant:
+            continue
+        inventory_item = variant.get("inventoryItem")
+        if not inventory_item:
+            continue
+        sku = (inventory_item.get("sku") or "").strip()
+        if sku and sku.casefold() in EXCLUDED_SKUS:
+            matched.append(sku)
+
+    return matched
+
+
 def fetch_open_drafts() -> List[dict]:
     drafts: List[dict] = []
     cursor = None
@@ -342,6 +368,12 @@ def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
         reasons.append(
             f"Order value {order_value:.2f} is greater than {REVIEW_ORDER_VALUE_THRESHOLD:.2f}"
         )
+        return True, reasons
+
+    excluded_skus_found = get_excluded_skus_in_draft(draft)
+    if excluded_skus_found:
+        for sku in excluded_skus_found:
+            reasons.append(f"Order contains excluded SKU: {sku}")
         return True, reasons
 
     scan_text = get_review_scan_text(draft)
