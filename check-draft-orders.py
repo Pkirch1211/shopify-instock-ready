@@ -156,10 +156,8 @@ REVIEW_PATTERNS = [
     re.compile(r"\bPPP\b", re.IGNORECASE),
     re.compile(r"\bNEEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),
 
-    # Discount review triggers
-    # Catches: "5% Discount", "10% discount", "Discount 5%", "discount 10.5%"
-    re.compile(r"\b\d+(?:\.\d+)?\s*%\s*DISCOUNT\b", re.IGNORECASE),
-    re.compile(r"\bDISCOUNT\s*\d+(?:\.\d+)?\s*%\b", re.IGNORECASE),
+    # Any discount language should force human review.
+    re.compile(r"\bDISCOUNT\b", re.IGNORECASE),
 ]
 
 
