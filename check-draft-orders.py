@@ -147,13 +147,19 @@ mutation UpdateDraftTags($id: ID!, $input: DraftOrderInput!) {
 }
 """
 
-DEMO_PATTERNS = [
+REVIEW_PATTERNS = [
+    # Existing review triggers
     re.compile(r"\bFREE\s+DEMOS\b", re.IGNORECASE),
     re.compile(r"\bPURCHASE\s+POWER\b", re.IGNORECASE),
     re.compile(r"\bDEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMO\b", re.IGNORECASE),
     re.compile(r"\bPPP\b", re.IGNORECASE),
     re.compile(r"\bNEEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),
+
+    # Discount review triggers
+    # Catches: "5% Discount", "10% discount", "Discount 5%", "discount 10.5%"
+    re.compile(r"\b\d+(?:\.\d+)?\s*%\s*DISCOUNT\b", re.IGNORECASE),
+    re.compile(r"\bDISCOUNT\s*\d+(?:\.\d+)?\s*%\b", re.IGNORECASE),
 ]
 
 
@@ -381,7 +387,7 @@ def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
     if not scan_text:
         return False, reasons
 
-    for pattern in DEMO_PATTERNS:
+    for pattern in REVIEW_PATTERNS:
         if pattern.search(scan_text):
             reasons.append(
                 f"Matched review keyword '{pattern.pattern}' in note/PO text"
