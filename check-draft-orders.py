@@ -516,8 +516,9 @@ def update_draft_tags(
 
     if should_have_review_tag:
         new_tags.add(NEEDS_REVIEW_TAG)
-    else:
-        new_tags.discard(NEEDS_REVIEW_TAG)
+    # IMPORTANT: needs-review is sticky.
+    # This script may add it when review rules trigger, but it must not remove it.
+    # Manual/human review tags should only be cleared by an explicit review-resolved workflow.
 
     final_tags = sorted(new_tags)
 
@@ -644,8 +645,8 @@ def main() -> None:
 
             if needs_review and not has_review_tag:
                 final_actions.append(f"added {NEEDS_REVIEW_TAG}")
-            elif not needs_review and has_review_tag:
-                final_actions.append(f"removed {NEEDS_REVIEW_TAG}")
+            # Do not log or perform removal of NEEDS_REVIEW_TAG when needs_review is false.
+            # Existing needs-review tags are intentionally preserved as sticky/manual flags.
 
             updated = update_draft_tags(
                 draft_id=draft_id,
