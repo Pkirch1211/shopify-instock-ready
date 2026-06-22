@@ -73,6 +73,15 @@ query GetDraftOrders($cursor: String, $pageSize: Int!, $lineItemsPageSize: Int!)
         totalPrice
         customer {
           displayName
+          defaultAddress {
+            company
+          }
+        }
+        billingAddress {
+          company
+        }
+        shippingAddress {
+          company
         }
         lineItems(first: $lineItemsPageSize) {
           edges {
@@ -194,6 +203,38 @@ def get_customer_name(draft: dict) -> str:
     if not customer:
         return ""
     return (customer.get("displayName") or "").strip()
+
+
+def get_company_names(draft: dict) -> List[str]:
+    companies: List[str] = []
+
+    customer = draft.get("customer") or {}
+    default_address = customer.get("defaultAddress") or {}
+    billing_address = draft.get("billingAddress") or {}
+    shipping_address = draft.get("shippingAddress") or {}
+
+    for company in [
+        default_address.get("company"),
+        billing_address.get("company"),
+        shipping_address.get("company"),
+    ]:
+        company_name = (company or "").strip()
+        if company_name:
+            companies.append(company_name)
+
+    return companies
+
+
+def is_faire_order(draft: dict) -> bool:
+    customer_name = get_customer_name(draft)
+
+    if customer_name.casefold() == "faire":
+        return True
+
+    return any(
+        company.casefold() == "faire marketplace"
+        for company in get_company_names(draft)
+    )
 
 
 def is_excluded_customer(draft: dict) -> bool:
@@ -366,6 +407,10 @@ def get_review_scan_text(draft: dict) -> str:
 
 def evaluate_review_status(draft: dict) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
+
+    if is_faire_order(draft):
+        reasons.append("Customer is Faire or company is Faire Marketplace")
+        return True, reasons
 
     order_value = get_draft_order_value(draft)
     if order_value > REVIEW_ORDER_VALUE_THRESHOLD:
