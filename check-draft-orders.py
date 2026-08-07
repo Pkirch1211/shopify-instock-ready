@@ -163,10 +163,22 @@ REVIEW_PATTERNS = [
     re.compile(r"\bDEMOS\b", re.IGNORECASE),
     re.compile(r"\bDEMO\b", re.IGNORECASE),
     re.compile(r"\bPPP\b", re.IGNORECASE),
-    re.compile(r"\bNEEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),
+
+    # "needs review" and common misspellings/typos of it
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),   # needs review / needs-review
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REVEIW\b", re.IGNORECASE),   # reveiw (i/e swap)
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REIVEW\b", re.IGNORECASE),   # reivew (i/e swap, different spot)
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REVIWE\b", re.IGNORECASE),   # reviwe (w/e swap)
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REVEW\b", re.IGNORECASE),    # revew (dropped i)
+    re.compile(r"\bNEEDS?\s*[-_]?\s*REIVIEW\b", re.IGNORECASE),  # reiview (extra i)
+    re.compile(r"\bNEDS?\s*[-_]?\s*REVIEW\b", re.IGNORECASE),    # neds review (dropped e)
+    re.compile(r"\bNEED\s*[-_]?\s*REVIEW\b", re.IGNORECASE),     # need review (missing s)
 
     # Any discount language should force human review.
     re.compile(r"\bDISCOUNT\b", re.IGNORECASE),
+
+    # Rebecca — always route to manual review.
+    re.compile(r"\bREBECCA\b", re.IGNORECASE),
 ]
 
 
