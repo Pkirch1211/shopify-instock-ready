@@ -15,6 +15,7 @@ SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-10").strip()
 SHOPIFY_LOCATION_ID = os.getenv("SHOPIFY_LOCATION_ID", "").strip()
 READY_TAG = os.getenv("READY_TAG", "instock-ready").strip()
 NEEDS_REVIEW_TAG = os.getenv("NEEDS_REVIEW_TAG", "needs-review").strip()
+REVIEW_DONE_TAG = os.getenv("REVIEW_DONE_TAG", "review-done").strip()
 REVIEW_ORDER_VALUE_THRESHOLD = float(os.getenv("REVIEW_ORDER_VALUE_THRESHOLD", "5000").strip())
 EXCLUDE_TAGS = {
     t.strip()
@@ -210,6 +211,10 @@ def has_excluded_tag(tags: List[str]) -> bool:
     return any(tag in EXCLUDE_TAGS for tag in tags)
 
 
+def has_review_done_tag(tags: List[str]) -> bool:
+    return REVIEW_DONE_TAG in tags
+
+
 def get_customer_name(draft: dict) -> str:
     customer = draft.get("customer")
     if not customer:
@@ -331,7 +336,12 @@ def collect_inventory_item_ids(drafts: List[dict]) -> List[str]:
             continue
         if is_excluded_customer(draft):
             continue
-        if is_high_value_order(draft):
+        # High-value orders normally skip inventory lookups entirely because
+        # they're forced into needs-review without a ready/not-ready check.
+        # If review-done is already present, the draft falls through to the
+        # normal evaluation path in main(), so it needs its inventory data
+        # collected here too, or it can never earn instock-ready.
+        if is_high_value_order(draft) and not has_review_done_tag(tags):
             continue
 
         for edge in draft["lineItems"]["edges"]:
@@ -585,6 +595,7 @@ def main() -> None:
             tags = normalize_tags(draft.get("tags", []))
             customer_name = get_customer_name(draft)
             order_value = get_draft_order_value(draft)
+            review_done = has_review_done_tag(tags)
 
             if has_excluded_tag(tags):
                 logger.info("Skipping %s because it has an excluded tag", name)
@@ -598,7 +609,7 @@ def main() -> None:
                 )
                 continue
 
-            if is_high_value_order(draft):
+            if is_high_value_order(draft) and not review_done:
                 has_review_tag = NEEDS_REVIEW_TAG in tags
 
                 logger.info(
@@ -632,11 +643,18 @@ def main() -> None:
 
             is_ready, ready_reasons = evaluate_draft(draft, availability_map)
             needs_review, review_reasons = evaluate_review_status(draft)
+
+            if needs_review and review_done:
+                review_reasons = review_reasons + [
+                    f"Suppressed by {REVIEW_DONE_TAG} tag (was: {'; '.join(review_reasons)})"
+                ]
+                needs_review = False
+
             has_ready_tag = READY_TAG in tags
             has_review_tag = NEEDS_REVIEW_TAG in tags
 
             logger.info(
-                "Draft %s | customer=%s | order_value=%.2f | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | ready_reasons=%s | review_reasons=%s",
+                "Draft %s | customer=%s | order_value=%.2f | ready=%s | has_ready_tag=%s | needs_review=%s | has_review_tag=%s | review_done=%s | ready_reasons=%s | review_reasons=%s",
                 name,
                 customer_name or "(blank)",
                 order_value,
@@ -644,6 +662,7 @@ def main() -> None:
                 has_ready_tag,
                 needs_review,
                 has_review_tag,
+                review_done,
                 ready_reasons,
                 review_reasons,
             )
